@@ -58,6 +58,14 @@ body {
   margin-bottom: 0.25rem;
 }
 
+.field-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 textarea {
   width: 100%;
   min-height: 110px;
@@ -246,6 +254,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   border-top: 1px solid var(--border);
   margin: 2em 0;
 }
+
+/* Dynamic-state variants captured from JS-driven widgets */
+.reader [data-reader-variants] {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
+  margin: 1em 0;
+}
+.reader [data-reader-variants] > hr { margin: 1em 0; opacity: 0.4; }
+.reader [data-reader-variants] strong { color: var(--accent); }
 
 .app-footer {
   text-align: center;

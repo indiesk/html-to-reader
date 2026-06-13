@@ -10,6 +10,7 @@ A tiny client-side web app that turns pasted HTML/CSS/JS into a clean, copy- and
   - JS: `oncontextmenu`, `onselectstart`, `oncopy/cut/paste`, `onkeydown`, `window.print` overrides, devtools traps, etc.
   - CSS: `user-select: none`, `pointer-events: none`, hostile `@media print` rules
   - HTML inline event handlers
+- **Dynamic content capture** — when JS is provided, the page is rendered in a sandboxed iframe; sibling button / tab / radio groups are walked by clicking each option and snapshotting the result, then every unique variant is flattened into the reader output (labeled with the trigger's text)
 - Live preview of the reader output
 - Reports every restriction it stripped
 - One-click **Download as PDF** (via `html2pdf.js`, A4)

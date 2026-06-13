@@ -9,7 +9,7 @@
     'blockquote', 'q', 'cite',
     'pre', 'code', 'kbd', 'samp', 'var',
     'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
-    'figure', 'figcaption', 'img', 'picture', 'source',
+    'figure', 'figcaption', 'img',
     'a', 'strong', 'em', 'b', 'i', 'u', 's', 'sub', 'sup', 'small', 'mark', 'abbr', 'time',
     'details', 'summary', 'address'
   ]);
@@ -22,15 +22,16 @@
   ]);
 
   // Element is dropped but its (sanitized) children are kept
-  // These often wrap real text in modern apps (cards-as-buttons, form labels, etc.)
   const UNWRAP_TAGS = new Set([
     'button', 'form', 'fieldset', 'legend', 'label',
     'dialog', 'menu', 'menuitem'
   ]);
 
-  const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'datetime']);
+  const SAFE_ATTRS = new Set([
+    'href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'datetime',
+    'data-reader-variants', 'data-reader-variant-label'
+  ]);
 
-  // Patterns that indicate copy/print/share blocking
   const JS_BLOCK_PATTERNS = [
     { re: /oncontextmenu/i, name: 'contextmenu disable' },
     { re: /onselectstart/i, name: 'selectstart disable' },
@@ -79,9 +80,10 @@
     reportList: $('report-list')
   };
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   function detectBlocks(html, css, js) {
     const findings = [];
-
     for (const { re, name } of JS_BLOCK_PATTERNS) {
       if (js && re.test(js)) findings.push(`JS: ${name}`);
     }
@@ -99,32 +101,22 @@
   function sanitizeNode(node) {
     const children = Array.from(node.childNodes);
     for (const child of children) {
-      if (child.nodeType === Node.COMMENT_NODE) {
-        child.remove();
-        continue;
-      }
+      if (child.nodeType === Node.COMMENT_NODE) { child.remove(); continue; }
       if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
       const tag = child.tagName.toLowerCase();
 
-      if (STRIP_TREE.has(tag)) {
-        child.remove();
-        continue;
-      }
+      if (STRIP_TREE.has(tag)) { child.remove(); continue; }
 
-      // Sanitize the subtree first so unwrapped children are already clean
       sanitizeNode(child);
 
       const shouldUnwrap = UNWRAP_TAGS.has(tag) || !KEEP_TAGS.has(tag);
-
       if (shouldUnwrap) {
-        // Drop the wrapper, keep its (already-sanitized) children in place
         while (child.firstChild) node.insertBefore(child.firstChild, child);
         child.remove();
         continue;
       }
 
-      // KEEP: scrub attributes down to a safe allowlist
       const attrs = Array.from(child.attributes);
       for (const attr of attrs) {
         const name = attr.name.toLowerCase();
@@ -137,13 +129,11 @@
         child.removeAttribute(attr.name);
       }
 
-      // Open external links safely in new tab
       if (tag === 'a' && child.hasAttribute('href')) {
         child.setAttribute('target', '_blank');
         child.setAttribute('rel', 'noopener noreferrer');
       }
 
-      // Drop empty containers (but never void/media elements)
       if (
         !['img', 'br', 'hr', 'col'].includes(tag) &&
         !child.hasChildNodes() &&
@@ -156,15 +146,226 @@
 
   function buildReader(htmlSource) {
     const doc = new DOMParser().parseFromString(htmlSource || '', 'text/html');
-
-    // If parsing produced nothing meaningful, fall back to wrapping plain text
-    const root = doc.body;
-    sanitizeNode(root);
-
-    return root.innerHTML.trim();
+    sanitizeNode(doc.body);
+    return doc.body.innerHTML.trim();
   }
 
-  function process() {
+  // ---------- Dynamic content capture (sandboxed) ----------
+
+  function escapeForScript(s) {
+    // Defuse </script> so it can't close the host <script> tag, and \u2028/\u2029.
+    return String(s)
+      .replace(/<\/(script)/gi, '<\\/$1')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+  }
+  function escapeForStyle(s) {
+    return String(s).replace(/<\/(style)/gi, '<\\/$1');
+  }
+
+  // Runs inside the sandbox to neutralise navigation/alerts and prevent state escapes
+  const SANDBOX_PREAMBLE = `
+    try {
+      window.alert = window.confirm = window.prompt = function(){};
+      window.open = function(){ return null; };
+      window.print = function(){};
+      const noop = function(){};
+      try { history.pushState = history.replaceState = noop; } catch(e){}
+      addEventListener('submit', function(e){ e.preventDefault(); }, true);
+      addEventListener('beforeunload', function(e){ e.preventDefault(); e.returnValue=''; });
+      // Force animations / transitions off so snapshots are stable
+      const s = document.createElement('style');
+      s.textContent = '*, *::before, *::after { transition: none !important; animation: none !important; }';
+      document.head.appendChild(s);
+    } catch(e){}
+  `;
+
+  function buildSandboxDoc(html, css, js) {
+    const css2 = escapeForStyle(css || '');
+    const js2 = escapeForScript(js || '');
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank">
+      <style>${css2}</style>
+    </head><body>${html}<script>${SANDBOX_PREAMBLE}<\/script><script>try{${js2}}catch(e){}<\/script></body></html>`;
+  }
+
+  function shortLabel(el) {
+    return (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  }
+
+  function isInteractiveTrigger(el) {
+    if (!el || !el.tagName) return false;
+    if (el.tagName === 'BUTTON') return true;
+    const role = (el.getAttribute && el.getAttribute('role')) || '';
+    return role === 'button' || role === 'tab' || role === 'radio' || role === 'menuitem' || role === 'option';
+  }
+
+  function syntheticClick(el) {
+    try {
+      el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true }));
+      el.click();
+    } catch (e) { /* swallow */ }
+  }
+
+  // Walk button groups and merge per-state content into the live DOM
+  async function expandAllVariants(doc) {
+    const triggers = Array.from(doc.querySelectorAll('button, [role="button"], [role="tab"], [role="radio"], [role="menuitem"], [role="option"]'))
+      .filter(isInteractiveTrigger);
+
+    // Group by direct parent — interactive groups are typically siblings
+    const groups = new Map();
+    for (const t of triggers) {
+      const p = t.parentElement;
+      if (!p) continue;
+      if (!groups.has(p)) groups.set(p, []);
+      groups.get(p).push(t);
+    }
+
+    // Process deepest groups first so outer expansions don't strand nested triggers.
+    const ordered = Array.from(groups.entries())
+      .filter(([, items]) => items.length >= 2 && items.length <= 24)
+      .sort(([a], [b]) => depth(b) - depth(a));
+
+    let expandedCount = 0;
+    for (const [parent, items] of ordered) {
+      if (!parent.isConnected) continue;
+      const did = await tryExpandGroup(parent, items);
+      if (did) expandedCount++;
+    }
+    return expandedCount;
+  }
+
+  function depth(el) {
+    let n = 0;
+    while (el && el.parentElement) { n++; el = el.parentElement; }
+    return n;
+  }
+
+  function currentSiblings(container, exclude) {
+    return Array.from(container.children).filter((c) => c !== exclude);
+  }
+
+  async function tryExpandGroup(triggerParent, initialTriggers) {
+    const container = triggerParent.parentElement;
+    if (!container || !container.isConnected) return false;
+    if (currentSiblings(container, triggerParent).length === 0) return false;
+
+    const snapshots = [];
+    const triggerCount = initialTriggers.length;
+
+    for (let idx = 0; idx < triggerCount; idx++) {
+      if (!triggerParent.isConnected || !container.isConnected) break;
+
+      // Re-query each iteration — React may have re-mounted the parent's children
+      const freshTriggers = Array.from(triggerParent.children).filter(isInteractiveTrigger);
+      const trig = freshTriggers[idx] || (initialTriggers[idx] && initialTriggers[idx].isConnected ? initialTriggers[idx] : null);
+      if (!trig) continue;
+
+      syntheticClick(trig);
+      await sleep(70);
+
+      if (!container.isConnected) break;
+      const sibs = currentSiblings(container, triggerParent);
+      snapshots.push({
+        label: shortLabel(trig),
+        sibs: sibs.map((s) => s.innerHTML)
+      });
+    }
+
+    if (snapshots.length < 2) return false;
+
+    const finalSiblings = currentSiblings(container, triggerParent);
+    let changed = false;
+
+    for (let i = 0; i < finalSiblings.length; i++) {
+      const variants = snapshots.map((s) => s.sibs[i] || '').filter(Boolean);
+      const unique = new Set(variants);
+      if (unique.size < 2) continue;
+
+      const sibling = finalSiblings[i];
+      if (!sibling.isConnected) continue;
+
+      const ownerDoc = sibling.ownerDocument;
+      const wrap = ownerDoc.createElement('div');
+      wrap.setAttribute('data-reader-variants', '');
+
+      const seen = new Set();
+      for (const snap of snapshots) {
+        const html = snap.sibs[i];
+        if (!html || seen.has(html)) continue;
+        seen.add(html);
+
+        if (wrap.children.length > 0) {
+          wrap.appendChild(ownerDoc.createElement('hr'));
+        }
+        if (snap.label) {
+          const p = ownerDoc.createElement('p');
+          const strong = ownerDoc.createElement('strong');
+          strong.textContent = `${snap.label}:`;
+          p.appendChild(strong);
+          wrap.appendChild(p);
+        }
+        const body = ownerDoc.createElement('div');
+        body.innerHTML = html;
+        wrap.appendChild(body);
+      }
+
+      sibling.innerHTML = '';
+      sibling.appendChild(wrap);
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  async function captureWithStates(html, css, js) {
+    if (!js || !js.trim()) return null;
+
+    return new Promise((resolve) => {
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      iframe.style.cssText = 'position:fixed;left:-99999px;top:0;width:1280px;height:900px;border:0;opacity:0;pointer-events:none;';
+      iframe.setAttribute('aria-hidden', 'true');
+
+      const timer = setTimeout(() => {
+        try { iframe.remove(); } catch (e) {}
+        resolve(null);
+      }, 12000);
+
+      iframe.addEventListener('load', async () => {
+        try {
+          // Give SPAs time to hydrate / render
+          await sleep(900);
+          const d = iframe.contentDocument;
+          if (!d || !d.body) { clearTimeout(timer); iframe.remove(); return resolve({ html: null, variants: 0 }); }
+          const variants = await expandAllVariants(d).catch(() => 0);
+          const finalHtml = d.body.innerHTML;
+          clearTimeout(timer);
+          iframe.remove();
+          resolve({ html: finalHtml, variants });
+        } catch (err) {
+          clearTimeout(timer);
+          try { iframe.remove(); } catch (e) {}
+          resolve(null);
+        }
+      });
+
+      try {
+        iframe.srcdoc = buildSandboxDoc(html, css, js);
+      } catch (e) {
+        clearTimeout(timer);
+        resolve(null);
+        return;
+      }
+      document.body.appendChild(iframe);
+    });
+  }
+
+  // ---------- UI flow ----------
+
+  async function process() {
     const html = els.html.value;
     const css = els.css.value;
     const js = els.js.value;
@@ -177,31 +378,46 @@
       return;
     }
 
+    els.btnProcess.disabled = true;
+    els.btnDownload.disabled = true;
+    els.preview.innerHTML = '';
+
     const findings = detectBlocks(html, css, js);
-    const cleanHtml = buildReader(html);
+
+    let sourceHtml = html;
+    let variantsFound = 0;
+
+    if (js.trim()) {
+      els.previewHint.textContent = 'Running scripts in sandbox to capture dynamic states…';
+      const captured = await captureWithStates(html, css, js);
+      if (captured && captured.html) {
+        sourceHtml = captured.html;
+        variantsFound = captured.variants || 0;
+      } else {
+        els.previewHint.textContent = 'Sandbox capture skipped — using static HTML.';
+      }
+    }
+
+    const cleanHtml = buildReader(sourceHtml);
 
     els.preview.innerHTML = cleanHtml || '<p><em>No readable content was extracted.</em></p>';
-    els.previewHint.textContent = 'Reader view ready — copy, print, or download as PDF.';
+    els.previewHint.textContent = variantsFound > 0
+      ? `Reader view ready — captured ${variantsFound} dynamic group${variantsFound === 1 ? '' : 's'}.`
+      : 'Reader view ready — copy, print, or download as PDF.';
     els.btnDownload.disabled = false;
+    els.btnProcess.disabled = false;
 
     if (findings.length) {
       els.report.hidden = false;
       els.reportCount.textContent = String(findings.length);
-      els.reportList.innerHTML = findings
-        .map((f) => `<li>${escapeHtml(f)}</li>`)
-        .join('');
+      els.reportList.innerHTML = findings.map((f) => `<li>${escapeHtml(f)}</li>`).join('');
     } else {
       els.report.hidden = true;
     }
   }
 
   function escapeHtml(s) {
-    return s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function downloadPdf() {
@@ -211,7 +427,6 @@
     }
     if (!els.preview.innerHTML.trim()) return;
 
-    // Clone preview into a clean container with print-friendly margins
     const container = document.createElement('div');
     container.className = 'reader';
     container.style.cssText = 'padding: 24px; font-family: Georgia, serif; color: #222; background: #fff;';
@@ -219,17 +434,14 @@
 
     const filename = `reader-${new Date().toISOString().slice(0, 10)}.pdf`;
 
-    html2pdf()
-      .set({
-        margin: [12, 14, 14, 14],
-        filename,
-        image: { type: 'jpeg', quality: 0.95 },
-        html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-      })
-      .from(container)
-      .save();
+    html2pdf().set({
+      margin: [12, 14, 14, 14],
+      filename,
+      image: { type: 'jpeg', quality: 0.95 },
+      html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    }).from(container).save();
   }
 
   function clearAll() {
@@ -242,7 +454,10 @@
     els.report.hidden = true;
   }
 
-  els.btnProcess.addEventListener('click', process);
+  els.btnProcess.addEventListener('click', () => { process().catch((e) => {
+    els.previewHint.textContent = `Error: ${e && e.message || e}`;
+    els.btnProcess.disabled = false;
+  }); });
   els.btnDownload.addEventListener('click', downloadPdf);
   els.btnClear.addEventListener('click', clearAll);
 })();
