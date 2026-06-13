@@ -14,10 +14,18 @@
     'details', 'summary', 'address'
   ]);
 
-  const STRIP_TAGS = new Set([
+  // Removed entirely — no readable content inside
+  const STRIP_TREE = new Set([
     'script', 'style', 'link', 'meta', 'iframe', 'object', 'embed',
-    'noscript', 'svg', 'canvas', 'audio', 'video',
-    'form', 'input', 'button', 'select', 'option', 'textarea', 'label', 'fieldset', 'legend'
+    'noscript', 'svg', 'canvas', 'audio', 'video', 'picture', 'source',
+    'input', 'select', 'option', 'textarea', 'progress', 'meter'
+  ]);
+
+  // Element is dropped but its (sanitized) children are kept
+  // These often wrap real text in modern apps (cards-as-buttons, form labels, etc.)
+  const UNWRAP_TAGS = new Set([
+    'button', 'form', 'fieldset', 'legend', 'label',
+    'dialog', 'menu', 'menuitem'
   ]);
 
   const SAFE_ATTRS = new Set(['href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'datetime']);
@@ -89,55 +97,58 @@
   }
 
   function sanitizeNode(node) {
-    // Walk children in reverse so removals don't break iteration
     const children = Array.from(node.childNodes);
     for (const child of children) {
-      if (child.nodeType === Node.ELEMENT_NODE) {
-        const tag = child.tagName.toLowerCase();
+      if (child.nodeType === Node.COMMENT_NODE) {
+        child.remove();
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
-        if (STRIP_TAGS.has(tag)) {
-          child.remove();
-          continue;
-        }
+      const tag = child.tagName.toLowerCase();
 
-        if (!KEEP_TAGS.has(tag)) {
-          // Unknown tag — unwrap (keep children, drop the element)
-          while (child.firstChild) node.insertBefore(child.firstChild, child);
-          child.remove();
-          continue;
-        }
+      if (STRIP_TREE.has(tag)) {
+        child.remove();
+        continue;
+      }
 
-        // Strip all attributes except a safe allowlist
-        const attrs = Array.from(child.attributes);
-        for (const attr of attrs) {
-          const name = attr.name.toLowerCase();
-          if (SAFE_ATTRS.has(name)) {
-            // Sanitize href/src against javascript: scheme
-            if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(attr.value)) {
-              child.removeAttribute(attr.name);
-            }
-            continue;
+      // Sanitize the subtree first so unwrapped children are already clean
+      sanitizeNode(child);
+
+      const shouldUnwrap = UNWRAP_TAGS.has(tag) || !KEEP_TAGS.has(tag);
+
+      if (shouldUnwrap) {
+        // Drop the wrapper, keep its (already-sanitized) children in place
+        while (child.firstChild) node.insertBefore(child.firstChild, child);
+        child.remove();
+        continue;
+      }
+
+      // KEEP: scrub attributes down to a safe allowlist
+      const attrs = Array.from(child.attributes);
+      for (const attr of attrs) {
+        const name = attr.name.toLowerCase();
+        if (SAFE_ATTRS.has(name)) {
+          if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(attr.value)) {
+            child.removeAttribute(attr.name);
           }
-          child.removeAttribute(attr.name);
+          continue;
         }
+        child.removeAttribute(attr.name);
+      }
 
-        // Open links in new tab for safety
-        if (tag === 'a' && child.hasAttribute('href')) {
-          child.setAttribute('target', '_blank');
-          child.setAttribute('rel', 'noopener noreferrer');
-        }
+      // Open external links safely in new tab
+      if (tag === 'a' && child.hasAttribute('href')) {
+        child.setAttribute('target', '_blank');
+        child.setAttribute('rel', 'noopener noreferrer');
+      }
 
-        sanitizeNode(child);
-
-        // Remove empty containers (but keep void elements + media)
-        if (
-          !child.hasChildNodes() &&
-          !['img', 'br', 'hr', 'source', 'col'].includes(tag) &&
-          (child.textContent || '').trim() === ''
-        ) {
-          child.remove();
-        }
-      } else if (child.nodeType === Node.COMMENT_NODE) {
+      // Drop empty containers (but never void/media elements)
+      if (
+        !['img', 'br', 'hr', 'col'].includes(tag) &&
+        !child.hasChildNodes() &&
+        (child.textContent || '').trim() === ''
+      ) {
         child.remove();
       }
     }
