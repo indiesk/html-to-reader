@@ -270,6 +270,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--muted);
 }
 
+.build-label {
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  background: #e8efff;
+  color: var(--accent);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+}
+
 @media print {
   .app-header, .inputs, .actions, .preview-header, .app-footer { display: none !important; }
   .layout { display: block; padding: 0; }
