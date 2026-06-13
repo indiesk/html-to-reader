@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTML to Reader</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.2/html2pdf.bundle.min.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>HTML &rarr; Reader</h1>
+    <p class="tagline">Paste HTML, CSS, and JS. Get a clean, printable, copy-friendly reader view.</p>
+  </header>
+
+  <main class="layout">
+    <section class="inputs" aria-label="Source inputs">
+      <div class="field">
+        <label for="html-input">HTML</label>
+        <textarea id="html-input" spellcheck="false" placeholder="&lt;article&gt;&lt;h1&gt;Hello&lt;/h1&gt;...&lt;/article&gt;"></textarea>
+      </div>
+      <div class="field">
+        <label for="css-input">CSS</label>
+        <textarea id="css-input" spellcheck="false" placeholder="body { user-select: none; } /* will be stripped */"></textarea>
+      </div>
+      <div class="field">
+        <label for="js-input">JavaScript</label>
+        <textarea id="js-input" spellcheck="false" placeholder="document.oncontextmenu = e =&gt; e.preventDefault(); // will be stripped"></textarea>
+      </div>
+
+      <div class="actions">
+        <button id="btn-process" type="button" class="primary">Generate reader view</button>
+        <button id="btn-download" type="button" class="secondary" disabled>Download PDF</button>
+        <button id="btn-clear" type="button" class="ghost">Clear</button>
+      </div>
+
+      <details class="report" id="report" hidden>
+        <summary>Stripped restrictions <span class="count" id="report-count">0</span></summary>
+        <ul id="report-list"></ul>
+      </details>
+    </section>
+
+    <section class="preview-wrap" aria-label="Reader preview">
+      <div class="preview-header">
+        <h2>Preview</h2>
+        <span class="preview-hint" id="preview-hint">Reader output will appear here.</span>
+      </div>
+      <article id="preview" class="reader"></article>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <small>Runs entirely in your browser. No data leaves the page.</small>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

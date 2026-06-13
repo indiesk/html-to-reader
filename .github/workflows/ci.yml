@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          for f in index.html style.css app.js; do
+            if [ ! -f "$f" ]; then
+              echo "Missing required file: $f" >&2
+              exit 1
+            fi
+          done
+          echo "All required files present."
+
+      - name: HTML syntax sanity
+        run: |
+          if ! grep -q "<!DOCTYPE html>" index.html; then
+            echo "index.html missing DOCTYPE" >&2
+            exit 1
+          fi
+          echo "index.html looks valid."
+
+      - name: JS syntax check
+        run: node --check app.js
+
+      - name: No console.log left behind
+        run: |
+          if grep -n "console\.log" app.js; then
+            echo "Stray console.log found" >&2
+            exit 1
+          fi
+          echo "Clean."
